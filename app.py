@@ -44,7 +44,7 @@ def calculer_impot_plus_value(plus_value_brute, duree_detention):
     return impot_total_pv, plus_value_brute, base_imposable_ir, base_imposable_ps
 
 
-# --- MOTEUR DE SIMULATION LMNP (ADAPTÉ POUR RETOURNER DES NOMBRES) ---
+# --- MOTEUR DE SIMULATION LMNP (INCHANGÉ) ---
 def generer_projection_lmnp(params):
     try: valeurs_num = {k: float(v) for k, v in params.items()}
     except (ValueError, TypeError): return [{"erreur": "Veuillez entrer des nombres valides."}]
@@ -185,57 +185,55 @@ def generer_projection_lmnp(params):
 # --- INTERFACE GRAPHIQUE STREAMLIT ---
 
 st.set_page_config(layout="wide", page_title="Simulateur SARL de Famille (IR)")
+
+# --- Zone de saisie dans la barre latérale ---
+with st.sidebar:
+    st.header("⚙️ Paramètres de Simulation")
+
+    # Définition des champs et de leurs valeurs par défaut
+    champs = { "bien": {"prix_achat": 120000.0, "cout_travaux": 0.0, "valeur_meubles": 10000.0, "loyer_mensuel": 900.0}, "financement": {"apport_personnel": 30000.0, "frais_notaire": 10000.0, "duree_pret": 25, "taux_interet_pret": 3.5, "taux_assurance_pret": 0.34, "frais_dossier": 0.0}, "fiscalite": {"tmi_pc": 11.0, "duree_amort_immo": 30, "duree_amort_meubles": 7, "taux_distrib_pc": 100.0}, "hypotheses": {"inflation_pc": 2.0, "revalo_bien_pc": 2.0, "charges_copro": 100.0, "taxe_fonciere": 500.0, "frais_gestion_pc": 6.0, "taux_gli_pc": 3.5, "assurance_pno": 120.0, "cfe": 150.0} }
+    params = {}
+
+    # Panneaux de saisie
+    with st.expander("🏠 Projet Immobilier", expanded=True):
+        params["prix_achat"] = st.number_input("Prix d'achat (€)", min_value=0.0, value=champs["bien"]["prix_achat"], step=1000.0, format="%.2f")
+        params["cout_travaux"] = st.number_input("Coût des travaux (€)", min_value=0.0, value=champs["bien"]["cout_travaux"], step=500.0, format="%.2f")
+        params["valeur_meubles"] = st.number_input("Valeur des meubles (€)", min_value=0.0, value=champs["bien"]["valeur_meubles"], step=100.0, format="%.2f")
+        params["loyer_mensuel"] = st.number_input("Loyer mensuel HC (€)", min_value=0.0, value=champs["bien"]["loyer_mensuel"], step=10.0, format="%.2f")
+    
+    with st.expander("💰 Financement & Frais", expanded=True):
+        params["apport_personnel"] = st.number_input("Apport personnel (€)", min_value=0.0, value=champs["financement"]["apport_personnel"], step=1000.0, format="%.2f")
+        params["frais_notaire"] = st.number_input("Frais de notaire & annexes (€)", min_value=0.0, value=champs["financement"]["frais_notaire"], step=100.0, format="%.2f")
+        params["duree_pret"] = st.number_input("Durée du prêt (ans)", min_value=1, max_value=30, value=champs["financement"]["duree_pret"], step=1)
+        params["taux_interet_pret"] = st.number_input("Taux d'intérêt du prêt (%)", min_value=0.0, value=champs["financement"]["taux_interet_pret"], step=0.01, format="%.2f")
+        params["taux_assurance_pret"] = st.number_input("Taux d'assurance du prêt (%)", min_value=0.0, value=champs["financement"]["taux_assurance_pret"], step=0.01, format="%.2f")
+        params["frais_dossier"] = st.number_input("Frais de dossier bancaire (€)", min_value=0.0, value=champs["financement"]["frais_dossier"], step=50.0, format="%.2f")
+        montant_pret = params["prix_achat"] + params["cout_travaux"] + params["frais_notaire"] - params["apport_personnel"]
+        st.metric(label="Montant du prêt à financer", value=f"{montant_pret:,.2f} €")
+
+    with st.expander("⚖️ Fiscalité & Distribution", expanded=True):
+        params["tmi_pc"] = st.number_input("Taux Marginal d'Imposition (TMI) (%)", min_value=0.0, max_value=100.0, value=champs["fiscalite"]["tmi_pc"], step=1.0, format="%.2f")
+        st.info("PS sur revenus locatifs : 17.2%.")
+        params["duree_amort_immo"] = st.number_input("Durée d'amortissement de l'immobilier (ans)", min_value=1, max_value=100, value=champs["fiscalite"]["duree_amort_immo"], step=1)
+        params["duree_amort_meubles"] = st.number_input("Durée d'amortissement des meubles (ans)", min_value=1, max_value=20, value=champs["fiscalite"]["duree_amort_meubles"], step=1)
+        params["taux_distrib_pc"] = st.number_input("Taux de distribution des dividendes (%)", min_value=0.0, max_value=100.0, value=champs["fiscalite"]["taux_distrib_pc"], step=5.0, format="%.2f")
+
+    with st.expander("📈 Hypothèses & Charges Annuelles", expanded=True):
+        params["inflation_pc"] = st.number_input("Inflation annuelle (%)", min_value=0.0, max_value=20.0, value=champs["hypotheses"]["inflation_pc"], step=0.1, format="%.2f")
+        params["revalo_bien_pc"] = st.number_input("Revalorisation annuelle du bien (%)", min_value=-5.0, max_value=20.0, value=champs["hypotheses"]["revalo_bien_pc"], step=0.1, format="%.2f")
+        params["charges_copro"] = st.number_input("Charges de copropriété mensuelles (€)", min_value=0.0, value=champs["hypotheses"]["charges_copro"], step=5.0, format="%.2f")
+        params["taxe_fonciere"] = st.number_input("Taxe foncière annuelle (€)", min_value=0.0, value=champs["hypotheses"]["taxe_fonciere"], step=10.0, format="%.2f")
+        params["frais_gestion_pc"] = st.number_input("Frais de gestion locative (%)", min_value=0.0, max_value=100.0, value=champs["hypotheses"]["frais_gestion_pc"], step=0.5, format="%.2f")
+        params["taux_gli_pc"] = st.number_input("Taux d'assurance loyers impayés (GLI) (%)", min_value=0.0, max_value=10.0, value=champs["hypotheses"]["taux_gli_pc"], step=0.1, format="%.2f")
+        params["assurance_pno"] = st.number_input("Assurance PNO annuelle (€)", min_value=0.0, value=champs["hypotheses"]["assurance_pno"], step=5.0, format="%.2f")
+        params["cfe"] = st.number_input("Cotisation Foncière des Entreprises (CFE) (€)", min_value=0.0, value=champs["hypotheses"]["cfe"], step=10.0, format="%.2f")
+
+
+# --- Zone principale pour les titres et les résultats ---
 st.title("📈 Simulateur d'Investissement en SARL de Famille (IR)")
 st.write("Cet outil permet de simuler la rentabilité d'un investissement locatif meublé (LMNP) via une SARL de famille à l'IR.")
-
-# Définition des champs et de leurs valeurs par défaut
-champs = { "bien": {"prix_achat": 120000.0, "cout_travaux": 0.0, "valeur_meubles": 10000.0, "loyer_mensuel": 900.0}, "financement": {"apport_personnel": 30000.0, "frais_notaire": 10000.0, "duree_pret": 25, "taux_interet_pret": 3.5, "taux_assurance_pret": 0.34, "frais_dossier": 0.0}, "fiscalite": {"tmi_pc": 11.0, "duree_amort_immo": 30, "duree_amort_meubles": 7, "taux_distrib_pc": 100.0}, "hypotheses": {"inflation_pc": 2.0, "revalo_bien_pc": 2.0, "charges_copro": 100.0, "taxe_fonciere": 500.0, "frais_gestion_pc": 6.0, "taux_gli_pc": 3.5, "assurance_pno": 120.0, "cfe": 150.0} }
-
-params = {}
-
-# Panneaux de saisie
-col1, col2 = st.columns(2)
-
-with col1:
-    st.header("🏠 Projet Immobilier")
-    params["prix_achat"] = st.number_input("Prix d'achat (€)", min_value=0.0, value=champs["bien"]["prix_achat"], step=1000.0, format="%.2f")
-    params["cout_travaux"] = st.number_input("Coût des travaux (€)", min_value=0.0, value=champs["bien"]["cout_travaux"], step=500.0, format="%.2f")
-    params["valeur_meubles"] = st.number_input("Valeur des meubles (€)", min_value=0.0, value=champs["bien"]["valeur_meubles"], step=100.0, format="%.2f")
-    params["loyer_mensuel"] = st.number_input("Loyer mensuel HC (€)", min_value=0.0, value=champs["bien"]["loyer_mensuel"], step=10.0, format="%.2f")
-    
-    st.header("⚖️ Fiscalité Personnelle (IR)")
-    params["tmi_pc"] = st.number_input("Taux Marginal d'Imposition (TMI) (%)", min_value=0.0, max_value=100.0, value=champs["fiscalite"]["tmi_pc"], step=1.0, format="%.2f")
-    st.info("Les prélèvements sociaux sur les revenus locatifs sont fixés à 17.2%.")
-    params["duree_amort_immo"] = st.number_input("Durée d'amortissement de l'immobilier (ans)", min_value=1, max_value=100, value=champs["fiscalite"]["duree_amort_immo"], step=1)
-    params["duree_amort_meubles"] = st.number_input("Durée d'amortissement des meubles (ans)", min_value=1, max_value=20, value=champs["fiscalite"]["duree_amort_meubles"], step=1)
-    params["taux_distrib_pc"] = st.number_input("Taux de distribution des dividendes (%)", min_value=0.0, max_value=100.0, value=champs["fiscalite"]["taux_distrib_pc"], step=5.0, format="%.2f")
-
-with col2:
-    st.header("💰 Financement & Frais")
-    params["apport_personnel"] = st.number_input("Apport personnel (€)", min_value=0.0, value=champs["financement"]["apport_personnel"], step=1000.0, format="%.2f")
-    params["frais_notaire"] = st.number_input("Frais de notaire & annexes (€)", min_value=0.0, value=champs["financement"]["frais_notaire"], step=100.0, format="%.2f")
-    params["duree_pret"] = st.number_input("Durée du prêt (ans)", min_value=1, max_value=30, value=champs["financement"]["duree_pret"], step=1)
-    params["taux_interet_pret"] = st.number_input("Taux d'intérêt du prêt (%)", min_value=0.0, value=champs["financement"]["taux_interet_pret"], step=0.01, format="%.2f")
-    params["taux_assurance_pret"] = st.number_input("Taux d'assurance du prêt (%)", min_value=0.0, value=champs["financement"]["taux_assurance_pret"], step=0.01, format="%.2f")
-    params["frais_dossier"] = st.number_input("Frais de dossier bancaire (€)", min_value=0.0, value=champs["financement"]["frais_dossier"], step=50.0, format="%.2f")
-    
-    montant_pret = params["prix_achat"] + params["cout_travaux"] + params["frais_notaire"] - params["apport_personnel"]
-    st.metric(label="Montant du prêt à financer", value=f"{montant_pret:,.2f} €")
-
-    st.header("⚙️ Hypothèses & Charges")
-    params["inflation_pc"] = st.number_input("Inflation annuelle (%)", min_value=0.0, max_value=20.0, value=champs["hypotheses"]["inflation_pc"], step=0.1, format="%.2f")
-    params["revalo_bien_pc"] = st.number_input("Revalorisation annuelle du bien (%)", min_value=-5.0, max_value=20.0, value=champs["hypotheses"]["revalo_bien_pc"], step=0.1, format="%.2f")
-    params["charges_copro"] = st.number_input("Charges de copropriété mensuelles (€)", min_value=0.0, value=champs["hypotheses"]["charges_copro"], step=5.0, format="%.2f")
-    params["taxe_fonciere"] = st.number_input("Taxe foncière annuelle (€)", min_value=0.0, value=champs["hypotheses"]["taxe_fonciere"], step=10.0, format="%.2f")
-    params["frais_gestion_pc"] = st.number_input("Frais de gestion locative (%)", min_value=0.0, max_value=100.0, value=champs["hypotheses"]["frais_gestion_pc"], step=0.5, format="%.2f")
-    params["taux_gli_pc"] = st.number_input("Taux d'assurance loyers impayés (GLI) (%)", min_value=0.0, max_value=10.0, value=champs["hypotheses"]["taux_gli_pc"], step=0.1, format="%.2f")
-    params["assurance_pno"] = st.number_input("Assurance PNO annuelle (€)", min_value=0.0, value=champs["hypotheses"]["assurance_pno"], step=5.0, format="%.2f")
-    params["cfe"] = st.number_input("Cotisation Foncière des Entreprises (CFE) (€)", min_value=0.0, value=champs["hypotheses"]["cfe"], step=10.0, format="%.2f")
-
-
 st.divider()
 
-# --- Affichage des résultats ---
 st.header("📊 Projection Financière Annuelle")
 
 projection_data, projection_post_credit = generer_projection_lmnp(params)
