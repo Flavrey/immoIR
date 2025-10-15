@@ -6,14 +6,13 @@ import numpy_financial as npf
 import numpy as np
 
 # --- CONFIGURATION DE LA PAGE STREAMLIT ---
-# Doit être la première commande Streamlit
 st.set_page_config(
     page_title="Simulateur SCI à l'IS v3",
     page_icon="📊",
     layout="wide"
 )
 
-# --- MOTEUR DE CALCUL DU PRÊT (INCHANGÉ) ---
+# --- MOTEUR DE CALCUL (INCHANGÉ) ---
 def generer_tableau_amortissement(montant_pret, taux_annuel_pc, duree_annees):
     if not (montant_pret > 0 and taux_annuel_pc > 0 and duree_annees > 0): return {}
     taux_mensuel = (taux_annuel_pc / 100) / 12
@@ -22,10 +21,8 @@ def generer_tableau_amortissement(montant_pret, taux_annuel_pc, duree_annees):
         mensualite = npf.pmt(taux_mensuel, nb_mois, -montant_pret)
     except (ZeroDivisionError, ValueError):
         return {}
-    
     tableau_annuel = defaultdict(lambda: {'interet': 0, 'principal': 0, 'crd_fin_annee': 0})
     capital_restant_du = montant_pret
-    
     for mois in range(1, nb_mois + 1):
         annee = (mois - 1) // 12 + 1
         interet_mois = capital_restant_du * taux_mensuel
@@ -34,10 +31,8 @@ def generer_tableau_amortissement(montant_pret, taux_annuel_pc, duree_annees):
         tableau_annuel[annee]['interet'] += interet_mois
         tableau_annuel[annee]['principal'] += principal_mois
         tableau_annuel[annee]['crd_fin_annee'] = capital_restant_du if capital_restant_du > 0.01 else 0
-        
     return dict(tableau_annuel)
 
-# --- MOTEUR DE SIMULATION SCI À L'IS (INCHANGÉ) ---
 def generer_projection_sci_is(params):
     valeurs_num = params
     prix_achat, cout_travaux, frais_notaire = valeurs_num["prix_achat"], valeurs_num["cout_travaux"], valeurs_num["frais_notaire"]
@@ -49,12 +44,9 @@ def generer_projection_sci_is(params):
     montant_pret = cout_acquisition + frais_notaire - apport
     duree_pret = int(valeurs_num["duree_pret"])
     tableau_amortissement_pret = generer_tableau_amortissement(montant_pret, valeurs_num["taux_interet_pret"], duree_pret)
-    mensualite_assurance = (montant_pret * (valeurs_num["taux_assurance_pret"] / 100)) / 12
+    mensualite_assurance = (montant_pret * (valeurs_num["taux_assurance_pret"] / 100)) / 12 if montant_pret > 0 else 0
     inflation_pc, revalo_bien_pc = valeurs_num["inflation_pc"] / 100, valeurs_num["revalo_bien_pc"] / 100
-    cashflow_investisseur_accumule = 0
-    amortissement_cumule = 0
-    tresorerie_sci_cumulee = 0
-    abondement_cumule = 0
+    cashflow_investisseur_accumule, amortissement_cumule, tresorerie_sci_cumulee, abondement_cumule = 0, 0, 0, 0
     flux_tresorerie_tri_annuels = []
     projection = []
 
@@ -75,8 +67,7 @@ def generer_projection_sci_is(params):
         amort_meubles = valeurs_num["valeur_meubles"] / valeurs_num["duree_amort_meubles"] if annee <= valeurs_num["duree_amort_meubles"] else 0
         amortissement_annuel = amort_immo_et_frais + amort_meubles
         amortissement_cumule += amortissement_annuel
-        charges_deductibles_totales = charges_annuelles_cash + interets_annuels + assurance_annuelle
-        resultat_fiscal_sci = loyer_annuel - charges_deductibles_totales - amortissement_annuel
+        resultat_fiscal_sci = loyer_annuel - (charges_annuelles_cash + interets_annuels + assurance_annuelle) - amortissement_annuel
         is_a_payer = 0
         if resultat_fiscal_sci > 0:
             benefice_taux_reduit = min(resultat_fiscal_sci, 42500)
@@ -108,7 +99,7 @@ def generer_projection_sci_is(params):
         total_cash_investi = investissement_initial_personnel + abondement_cumule
         total_cash_recu = cashflow_investisseur_accumule - cash_net_investisseur_annuel + cash_net_final_investisseur
         benefice_net_total = total_cash_recu - total_cash_investi
-        cash_flows_annuel_tri = [-investissement_initial_personnel] + flux_tresorerie_tri_annuels[:]
+        cash_flows_annuel_tri = [-investissement_initial_personnel] + flux_tresorerie_tri_annuels
         cash_flows_annuel_tri[-1] += cash_net_final_investisseur
         tri_pc = 0
         try:
@@ -116,7 +107,6 @@ def generer_projection_sci_is(params):
             tri_pc = tri * 100 if not np.isnan(tri) else 0
         except: pass
         projection.append({"Année": annee, "Loyers Annuels": loyer_annuel, "Résultat Fiscal": resultat_fiscal_sci, "Impôt (IS)": is_a_payer, "Dividendes Dispo.": dividendes_distribuables, "Cash-flow Net Invest.": flux_net_investisseur, "Tréso. SCI": tresorerie_sci_cumulee, "PV Imposable": plus_value_pro, "Impôt sur PV": is_sur_pv, "Bénéfice Net Total": benefice_net_total, "TRI (%)": tri_pc})
-
     if duree_pret > 0 and projection:
         annee_post_credit = duree_pret + 1
         facteur_inflation = (1 + inflation_pc)**(annee_post_credit - 1)
@@ -145,77 +135,49 @@ def generer_projection_sci_is(params):
         tresorerie_sci_post_credit -= dividendes_verses
         projection.append({key: "---" for key in projection[0].keys()})
         projection.append({"Année": f"An {annee_post_credit}", "Loyers Annuels": loyer_annuel, "Résultat Fiscal": resultat_fiscal_sci, "Impôt (IS)": is_a_payer, "Dividendes Dispo.": dividendes_distribuables, "Cash-flow Net Invest.": cash_net_investisseur_annuel, "Tréso. SCI": tresorerie_sci_post_credit, "PV Imposable": None, "Impôt sur PV": None, "Bénéfice Net Total": None, "TRI (%)": None})
-
     return projection
 
 # --- INTERFACE UTILISATEUR STREAMLIT ---
 
+# --- BARRE LATÉRALE POUR LES PARAMÈTRES ---
+st.sidebar.header("Paramètres de Simulation")
+
+# Section Bien & Charges
+with st.sidebar.expander("🏠 Projet Immobilier", expanded=True):
+    prix_achat = st.number_input("Prix d'achat (€)", min_value=0, value=200000, step=1000)
+    cout_travaux = st.number_input("Coût des travaux (€)", min_value=0, value=30000, step=500)
+    valeur_meubles = st.number_input("Valeur des meubles (€)", min_value=0, value=15000, step=500)
+    loyer_mensuel = st.number_input("Loyer mensuel HC (€)", min_value=0, value=1200, step=10)
+
+# Section Financement
+with st.sidebar.expander("🏦 Financement & Frais", expanded=True):
+    apport_personnel = st.number_input("Apport personnel (€)", min_value=0, value=20000, step=500)
+    frais_notaire = st.number_input("Frais de notaire (€)", min_value=0, value=16000, step=100)
+    duree_pret = st.number_input("Durée du prêt (années)", min_value=1, max_value=30, value=20, step=1)
+    taux_interet_pret = st.number_input("Taux d'intérêt du prêt (%)", min_value=0.0, value=3.5, step=0.01, format="%.2f")
+    taux_assurance_pret = st.number_input("Taux d'assurance du prêt (%)", min_value=0.0, value=0.34, step=0.01, format="%.2f")
+    frais_dossier = st.number_input("Frais de dossier bancaire (€)", min_value=0, value=1500, step=50)
+
+# Section Fiscalité & Amortissement
+with st.sidebar.expander("🧾 Fiscalité & Amortissement", expanded=False):
+    duree_amort_immo = st.number_input("Durée amort. Immobilier (ans)", min_value=1, value=30, step=1)
+    duree_amort_meubles = st.number_input("Durée amort. Meubles (ans)", min_value=1, value=7, step=1)
+    taux_distrib_pc = st.number_input("Taux de distribution des dividendes (%)", min_value=0.0, max_value=100.0, value=100.0, step=1.0)
+
+# Section Hypothèses & Charges
+with st.sidebar.expander("⚙️ Hypothèses & Charges", expanded=False):
+    inflation_pc = st.number_input("Inflation / Revalo. loyer (%)", min_value=0.0, value=2.0, step=0.1, format="%.1f")
+    revalo_bien_pc = st.number_input("Revalo. annuelle du bien (%)", min_value=0.0, value=3.0, step=0.1, format="%.1f")
+    charges_copro = st.number_input("Charges copro / mois (€)", min_value=0, value=100, step=5)
+    taxe_fonciere = st.number_input("Taxe foncière (€/an)", min_value=0, value=1000, step=10)
+    frais_gestion_pc = st.number_input("Frais de gestion (%)", min_value=0.0, value=7.0, step=0.1, format="%.1f")
+    taux_gli_pc = st.number_input("Taux GLI (%)", min_value=0.0, value=3.5, step=0.1, format="%.1f")
+    assurance_pno = st.number_input("Assurance PNO (€/an)", min_value=0, value=200, step=10)
+    cfe = st.number_input("CFE (€/an)", min_value=0, value=200, step=10)
+
+# --- CORPS PRINCIPAL DE LA PAGE ---
 st.title("Simulateur d'Investissement Locatif en SCI à l'IS 📊")
-st.markdown("##### Un outil avancé pour projeter la rentabilité et la fiscalité de votre projet sur le long terme.")
-st.write("") # Espace
-
-# --- Section 1: Paramètres de Simulation (regroupés dans des onglets) ---
-st.header("1. Paramètres de la Simulation")
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🏠 Projet Immobilier", 
-    "🏦 Financement & Frais", 
-    "🧾 Fiscalité & Amortissement", 
-    "⚙️ Hypothèses & Charges"
-])
-
-with tab1:
-    st.subheader("Description du bien et des revenus locatifs")
-    col1, col2 = st.columns(2)
-    with col1:
-        prix_achat = st.number_input("Prix d'achat (€)", min_value=0, value=200000, step=1000)
-        cout_travaux = st.number_input("Coût des travaux (€)", min_value=0, value=30000, step=500)
-    with col2:
-        valeur_meubles = st.number_input("Valeur des meubles (€)", min_value=0, value=15000, step=500)
-        loyer_mensuel = st.number_input("Loyer mensuel HC (€)", min_value=0, value=1200, step=10)
-
-with tab2:
-    st.subheader("Montage financier du projet")
-    col1, col2 = st.columns(2)
-    with col1:
-        apport_personnel = st.number_input("Apport personnel (€)", min_value=0, value=20000, step=500)
-        frais_notaire = st.number_input("Frais de notaire (€)", min_value=0, value=16000, step=100)
-        duree_pret = st.number_input("Durée du prêt (années)", min_value=1, max_value=30, value=20, step=1)
-    with col2:
-        taux_interet_pret = st.number_input("Taux d'intérêt du prêt (%)", min_value=0.0, value=3.5, step=0.01, format="%.2f")
-        taux_assurance_pret = st.number_input("Taux d'assurance du prêt (%)", min_value=0.0, value=0.34, step=0.01, format="%.2f")
-        frais_dossier = st.number_input("Frais de dossier bancaire (€)", min_value=0, value=1500, step=50)
-
-with tab3:
-    st.subheader("Paramètres fiscaux et comptables de la SCI")
-    col1, col2 = st.columns(2)
-    with col1:
-        duree_amort_immo = st.number_input("Durée amort. Immobilier (ans)", min_value=1, value=30, step=1)
-        duree_amort_meubles = st.number_input("Durée amort. Meubles (ans)", min_value=1, value=7, step=1)
-    with col2:
-        taux_distrib_pc = st.number_input("Taux de distribution des dividendes (%)", min_value=0.0, max_value=100.0, value=100.0, step=1.0)
-
-with tab4:
-    st.subheader("Hypothèses de marché et charges d'exploitation")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        inflation_pc = st.number_input("Inflation / Revalo. loyer (%)", min_value=0.0, value=2.0, step=0.1, format="%.1f")
-        revalo_bien_pc = st.number_input("Revalo. annuelle du bien (%)", min_value=0.0, value=3.0, step=0.1, format="%.1f")
-        charges_copro = st.number_input("Charges copro / mois (€)", min_value=0, value=100, step=5)
-    with col2:
-        taxe_fonciere = st.number_input("Taxe foncière (€/an)", min_value=0, value=1000, step=10)
-        frais_gestion_pc = st.number_input("Frais de gestion (%)", min_value=0.0, value=7.0, step=0.1, format="%.1f")
-        taux_gli_pc = st.number_input("Taux GLI (%)", min_value=0.0, value=3.5, step=0.1, format="%.1f")
-    with col3:
-        assurance_pno = st.number_input("Assurance PNO (€/an)", min_value=0, value=200, step=10)
-        cfe = st.number_input("CFE (€/an)", min_value=0, value=200, step=10)
-
-
-# --- Ligne de séparation ---
-st.divider()
-
-# --- Section 2: Résultats de la Simulation ---
-st.header("2. Résultats de la Simulation")
+st.markdown("##### Les résultats se mettent à jour automatiquement en fonction des paramètres saisis dans le menu de gauche.")
 
 params = {
     "prix_achat": prix_achat, "cout_travaux": cout_travaux, "frais_notaire": frais_notaire, "valeur_meubles": valeur_meubles,
@@ -226,14 +188,12 @@ params = {
     "frais_gestion_pc": frais_gestion_pc, "taux_gli_pc": taux_gli_pc, "taux_distrib_pc": taux_distrib_pc,
     "duree_amort_immo": duree_amort_immo, "duree_amort_meubles": duree_amort_meubles, "cfe": cfe
 }
-
 projection_data = generer_projection_sci_is(params)
 
 # --- Indicateurs Clés ---
-st.subheader("Indicateurs Clés du Projet")
+st.header("Indicateurs Clés du Projet")
 montant_pret = prix_achat + cout_travaux + frais_notaire - apport_personnel
 df_numerique = pd.DataFrame(projection_data).dropna().loc[pd.to_numeric(pd.DataFrame(projection_data)['Année'], errors='coerce').notna()]
-
 if not df_numerique.empty:
     cashflow_moyen_investisseur = df_numerique["Cash-flow Net Invest."].mean() / 12
     tri_final = df_numerique["TRI (%)"].iloc[-1]
@@ -245,11 +205,10 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("Montant du Prêt", f"{montant_pret:,.0f} €")
 col2.metric("Cash-flow Net Moyen / mois", f"{cashflow_moyen_investisseur:,.0f} €", help="Moyenne du cash-flow net mensuel reçu par l'investisseur pendant la durée du crédit.")
 col3.metric(f"TRI à {duree_pret} ans", f"{tri_final:.1f}%", help="Taux de Rentabilité Interne : le rendement annualisé réel de votre capital investi.")
-col4.metric(f"Bénéfice Net à {duree_pret} ans", f"{benefice_final:,.0f} €", help="Enrichissement net final en cas de revente la dernière année, après remboursement de tout le capital investi.")
-
+col4.metric(f"Bénéfice Net à {duree_pret} ans", f"{benefice_final:,.0f} €", help="Enrichissement net final en cas de revente la dernière année.")
 
 # --- Tableau de Projection ---
-st.subheader("Projection Financière Annuelle")
+st.header("Projection Financière Annuelle")
 if not projection_data:
     st.warning("Veuillez entrer des paramètres valides pour lancer la simulation.")
 else:
@@ -261,7 +220,6 @@ else:
     df_formate = df.style.format(format_dict, na_rep='N/A').set_properties(**{'text-align': 'right'})
     st.dataframe(df_formate, use_container_width=True, height=(duree_pret + 3) * 38)
     
-# --- Explication des colonnes ---
 with st.expander("🔍 Explication des colonnes du tableau"):
     st.markdown("""
     - **Année**: L'année de la simulation. 'An X' représente la première année type après la fin du crédit.
