@@ -1,59 +1,72 @@
 # app.py
+
 import streamlit as st
 import pandas as pd
 from collections import defaultdict
 import numpy_financial as npf
 import numpy as np
 
-# --- CONFIGURATION DE LA PAGE STREAMLIT ---
-# Doit être la première commande Streamlit
-st.set_page_config(
-    page_title="Simulateur SCI à l'IS v3",
-    page_icon="📊",
-    layout="wide"
-)
-
 # --- MOTEUR DE CALCUL DU PRÊT (INCHANGÉ) ---
 def generer_tableau_amortissement(montant_pret, taux_annuel_pc, duree_annees):
     if not (montant_pret > 0 and taux_annuel_pc > 0 and duree_annees > 0): return {}
     taux_mensuel = (taux_annuel_pc / 100) / 12
     nb_mois = int(duree_annees * 12)
-    try:
-        mensualite = npf.pmt(taux_mensuel, nb_mois, -montant_pret)
-    except (ZeroDivisionError, ValueError):
-        return {}
-    
+    try: mensualite = npf.pmt(taux_mensuel, nb_mois, -montant_pret)
+    except ZeroDivisionError: return {}
     tableau_annuel = defaultdict(lambda: {'interet': 0, 'principal': 0, 'crd_fin_annee': 0})
     capital_restant_du = montant_pret
-    
     for mois in range(1, nb_mois + 1):
         annee = (mois - 1) // 12 + 1
         interet_mois = capital_restant_du * taux_mensuel
         principal_mois = mensualite - interet_mois
         capital_restant_du -= principal_mois
-        tableau_annuel[annee]['interet'] += interet_mois
-        tableau_annuel[annee]['principal'] += principal_mois
+        tableau_annuel[annee]['interet'] += interet_mois; tableau_annuel[annee]['principal'] += principal_mois
         tableau_annuel[annee]['crd_fin_annee'] = capital_restant_du if capital_restant_du > 0.01 else 0
-        
     return dict(tableau_annuel)
 
-# --- MOTEUR DE SIMULATION SCI À L'IS (INCHANGÉ) ---
-def generer_projection_sci_is(params):
-    valeurs_num = params
-    prix_achat, cout_travaux, frais_notaire = valeurs_num["prix_achat"], valeurs_num["cout_travaux"], valeurs_num["frais_notaire"]
-    apport, frais_dossier = valeurs_num["apport_personnel"], valeurs_num["frais_dossier"]
-    loyer_mensuel_base, charges_copro_base, taxe_fonciere_base = valeurs_num["loyer_mensuel"], valeurs_num["charges_copro"], valeurs_num["taxe_fonciere"]
+# --- MOTEUR DE CALCUL IMPÔT PLUS-VALUE (INCHANGÉ) ---
+def calculer_impot_plus_value(plus_value_brute, duree_detention):
+    if plus_value_brute <= 0: return 0, 0, 0, 0
+    abattement_ir = 0
+    if duree_detention > 5:
+        abattement_ir += sum(0.06 for _ in range(6, min(duree_detention, 21) + 1))
+        if duree_detention >= 22: abattement_ir += 0.04
+    base_imposable_ir = plus_value_brute * (1 - abattement_ir)
+    impot_sur_revenu_pv = base_imposable_ir * 0.19
+    abattement_ps = 0
+    if duree_detention > 5:
+        abattement_ps += sum(0.0165 for _ in range(6, min(duree_detention, 21) + 1))
+        if duree_detention == 22: abattement_ps += 0.0160
+        if duree_detention > 22: abattement_ps += sum(0.09 for _ in range(23, min(duree_detention, 30) + 1))
+    base_imposable_ps = plus_value_brute * (1 - abattement_ps)
+    prelevements_sociaux_pv = base_imposable_ps * 0.172
+    impot_total_pv = max(0, impot_sur_revenu_pv) + max(0, prelevements_sociaux_pv)
+    return impot_total_pv, plus_value_brute, base_imposable_ir, base_imposable_ps
+
+
+# --- MOTEUR DE SIMULATION LMNP (ADAPTÉ POUR RETOURNER DES NOMBRES) ---
+def generer_projection_lmnp(params):
+    try: valeurs_num = {k: float(v) for k, v in params.items()}
+    except (ValueError, TypeError): return [{"erreur": "Veuillez entrer des nombres valides."}]
+
+    # Initialisation
+    prix_achat, cout_travaux, frais_notaire = valeurs_num.get("prix_achat", 0), valeurs_num.get("cout_travaux", 0), valeurs_num.get("frais_notaire", 0)
+    apport, frais_dossier = valeurs_num.get("apport_personnel", 0), valeurs_num.get("frais_dossier", 0)
+    montant_pret = prix_achat + cout_travaux + frais_notaire - apport
     cout_acquisition = prix_achat + cout_travaux
-    base_amortissable = prix_achat + cout_travaux + frais_notaire
-    investissement_initial_personnel = apport + frais_dossier
-    montant_pret = cout_acquisition + frais_notaire - apport
-    duree_pret = int(valeurs_num["duree_pret"])
-    tableau_amortissement_pret = generer_tableau_amortissement(montant_pret, valeurs_num["taux_interet_pret"], duree_pret)
-    mensualite_assurance = (montant_pret * (valeurs_num["taux_assurance_pret"] / 100)) / 12
-    inflation_pc, revalo_bien_pc = valeurs_num["inflation_pc"] / 100, valeurs_num["revalo_bien_pc"] / 100
-    cashflow_investisseur_accumule = 0
-    amortissement_cumule = 0
-    tresorerie_sci_cumulee = 0
+    base_acquisition_pv = prix_achat + cout_travaux + frais_notaire
+    investissement_initial_personnel = apport + frais_dossier # Frais de notaire sont dans le prêt
+    duree_pret = int(valeurs_num.get("duree_pret", 0))
+
+    tableau_amortissement_pret = generer_tableau_amortissement(montant_pret, valeurs_num.get("taux_interet_pret", 0), duree_pret)
+    mensualite_assurance_base = (montant_pret * (valeurs_num.get("taux_assurance_pret", 0) / 100)) / 12
+
+    loyer_mensuel_base, charges_copro_base, taxe_fonciere_base = valeurs_num.get("loyer_mensuel", 0), valeurs_num.get("charges_copro", 0), valeurs_num.get("taxe_fonciere", 0)
+    inflation_pc, revalo_bien_pc = valeurs_num.get("inflation_pc", 0) / 100, valeurs_num.get("revalo_bien_pc", 0) / 100
+    tmi_pc, prelevements_sociaux_pc = valeurs_num.get("tmi_pc", 0) / 100, 0.172 # PS sur revenus locatifs sont fixes
+    
+    cashflow_investisseur_accumule, amortissement_cumule, deficit_reportable = 0, 0, 0
+    tresorerie_sarl_cumulee = 0
     abondement_cumule = 0
     flux_tresorerie_tri_annuels = []
     projection = []
@@ -63,216 +76,212 @@ def generer_projection_sci_is(params):
         loyer_annuel = (loyer_mensuel_base * 12) * facteur_inflation
         charges_copro_annuelles = (charges_copro_base * 12) * facteur_inflation
         taxe_fonciere_actuelle = taxe_fonciere_base * facteur_inflation
-        frais_gestion_annuels = loyer_annuel * (valeurs_num["frais_gestion_pc"] / 100)
-        gli_annuelle = (loyer_annuel + charges_copro_annuelles) * (valeurs_num["taux_gli_pc"] / 100)
-        charges_annuelles_cash = (charges_copro_annuelles + taxe_fonciere_actuelle + valeurs_num["assurance_pno"] + frais_gestion_annuels + gli_annuelle + (valeurs_num["cfe"] * facteur_inflation))
+        frais_gestion_annuels = loyer_annuel * (valeurs_num.get("frais_gestion_pc", 0) / 100)
+        gli_annuelle = (loyer_annuel + charges_copro_annuelles) * (valeurs_num.get("taux_gli_pc", 0) / 100)
+        
+        charges_annuelles_cash = (charges_copro_annuelles + taxe_fonciere_actuelle +
+            valeurs_num.get("assurance_pno", 0) + frais_gestion_annuels + gli_annuelle +
+            (valeurs_num.get("cfe", 0) * facteur_inflation))
         if annee == 1: charges_annuelles_cash += frais_dossier
+
         interets_annuels = tableau_amortissement_pret.get(annee, {}).get('interet', 0)
-        principal_annuel = tableau_amortissement_pret.get(annee, {}).get('principal', 0)
-        assurance_annuelle = mensualite_assurance * 12
-        mensualite_credit_annuelle = interets_annuels + principal_annuel + assurance_annuelle
-        amort_immo_et_frais = base_amortissable * 0.85 / valeurs_num["duree_amort_immo"] if annee <= valeurs_num["duree_amort_immo"] else 0
-        amort_meubles = valeurs_num["valeur_meubles"] / valeurs_num["duree_amort_meubles"] if annee <= valeurs_num["duree_amort_meubles"] else 0
-        amortissement_annuel = amort_immo_et_frais + amort_meubles
+        assurance_annuelle = mensualite_assurance_base * 12
+        
+        charges_annuelles_deductibles = charges_annuelles_cash + interets_annuels + assurance_annuelle
+        
+        amort_immo = (prix_achat + frais_notaire) * 0.85 / valeurs_num.get("duree_amort_immo", 1) if annee <= valeurs_num.get("duree_amort_immo", 0) else 0
+        amort_travaux = cout_travaux / 10 if annee <= 10 else 0
+        amort_meubles = valeurs_num.get("valeur_meubles", 0) / valeurs_num.get("duree_amort_meubles", 1) if annee <= valeurs_num.get("duree_amort_meubles", 0) else 0
+        amortissement_annuel = amort_immo + amort_travaux + amort_meubles
         amortissement_cumule += amortissement_annuel
-        charges_deductibles_totales = charges_annuelles_cash + interets_annuels + assurance_annuelle
-        resultat_fiscal_sci = loyer_annuel - charges_deductibles_totales - amortissement_annuel
-        is_a_payer = 0
-        if resultat_fiscal_sci > 0:
-            benefice_taux_reduit = min(resultat_fiscal_sci, 42500)
-            is_a_payer = (benefice_taux_reduit * 0.15) + (max(0, resultat_fiscal_sci - benefice_taux_reduit) * 0.25)
-        cashflow_sci_avant_is = loyer_annuel - charges_annuelles_cash - mensualite_credit_annuelle
-        resultat_net_comptable = resultat_fiscal_sci - is_a_payer
-        tresorerie_sci_avant_operations = tresorerie_sci_cumulee + cashflow_sci_avant_is - is_a_payer
-        abondement = -tresorerie_sci_avant_operations if tresorerie_sci_avant_operations < 0 else 0
-        abondement_cumule += abondement
-        tresorerie_sci_cumulee = max(0, tresorerie_sci_avant_operations)
-        taux_distrib = valeurs_num["taux_distrib_pc"] / 100
-        dividendes_distribuables = max(0, resultat_net_comptable)
-        dividendes_verses = min(dividendes_distribuables, tresorerie_sci_cumulee) * taux_distrib
-        impot_dividendes = dividendes_verses * 0.30
-        cash_net_investisseur_annuel = dividendes_verses - impot_dividendes
-        cashflow_investisseur_accumule += cash_net_investisseur_annuel
-        tresorerie_sci_cumulee -= dividendes_verses
-        flux_net_investisseur = cash_net_investisseur_annuel - abondement
-        flux_tresorerie_tri_annuels.append(flux_net_investisseur)
+
+        resultat_fiscal_avant_deficit = loyer_annuel - charges_annuelles_deductibles - amortissement_annuel
+        benefice_imposable = max(0, resultat_fiscal_avant_deficit - deficit_reportable)
+        deficit_genere = abs(min(0, resultat_fiscal_avant_deficit)); deficit_consomme = min(deficit_reportable, max(0, resultat_fiscal_avant_deficit))
+        deficit_reportable = (deficit_reportable - deficit_consomme) + deficit_genere
+        impot_total_annuel = benefice_imposable * (tmi_pc + prelevements_sociaux_pc)
+        
+        principal_annuel = tableau_amortissement_pret.get(annee, {}).get('principal', 0)
+        mensualite_credit_annuelle = interets_annuels + principal_annuel + assurance_annuelle
+        cashflow_sarl_avant_operations = loyer_annuel - charges_annuelles_cash - mensualite_credit_annuelle
+        
+        tresorerie_avant_distribution = tresorerie_sarl_cumulee + cashflow_sarl_avant_operations
+        
+        abondement = 0
+        if tresorerie_avant_distribution < 0:
+            abondement = abs(tresorerie_avant_distribution)
+            abondement_cumule += abondement
+            tresorerie_sarl_cumulee = 0
+        else:
+            tresorerie_sarl_cumulee = tresorerie_avant_distribution
+            
+        taux_distrib = valeurs_num.get("taux_distrib_pc", 100) / 100
+        dividendes_disponibles = max(0, resultat_fiscal_avant_deficit)
+        dividendes_verses = min(dividendes_disponibles, tresorerie_sarl_cumulee) * taux_distrib
+        
+        tresorerie_sarl_cumulee -= dividendes_verses
+        
+        cashflow_net_investisseur_annuel = dividendes_verses - impot_total_annuel - abondement
+        cashflow_investisseur_accumule += cashflow_net_investisseur_annuel
+        flux_tresorerie_tri_annuels.append(cashflow_net_investisseur_annuel)
+
         prix_revente = cout_acquisition * (1 + revalo_bien_pc)**annee
-        valeur_nette_comptable = base_amortissable - amortissement_cumule
-        plus_value_pro = max(0, prix_revente - valeur_nette_comptable)
-        is_sur_pv = (min(plus_value_pro, 42500) * 0.15) + (max(0, plus_value_pro - 42500) * 0.25)
+        valeur_nette_comptable = base_acquisition_pv - amortissement_cumule
+        plus_value_brute = prix_revente - base_acquisition_pv
+        
+        impot_sur_pv, _, _, _ = calculer_impot_plus_value(plus_value_brute, annee)
+
         crd = tableau_amortissement_pret.get(annee, {}).get('crd_fin_annee', 0)
-        cash_revente_in_sci = prix_revente - crd - is_sur_pv
-        distribution_finale = tresorerie_sci_cumulee + cash_revente_in_sci
-        impot_distribution_finale = distribution_finale * 0.30
-        cash_net_final_investisseur = distribution_finale - impot_distribution_finale
+        
+        cash_net_apres_revente = prix_revente - crd - impot_sur_pv
+        cash_net_final_investisseur = cash_net_apres_revente + tresorerie_sarl_cumulee
+        
         total_cash_investi = investissement_initial_personnel + abondement_cumule
-        total_cash_recu = cashflow_investisseur_accumule - cash_net_investisseur_annuel + cash_net_final_investisseur
+        total_cash_recu = cashflow_investisseur_accumule - cashflow_net_investisseur_annuel + cash_net_final_investisseur
         benefice_net_total = total_cash_recu - total_cash_investi
-        cash_flows_annuel_tri = [-investissement_initial_personnel] + flux_tresorerie_tri_annuels[:]
-        cash_flows_annuel_tri[-1] += cash_net_final_investisseur
-        tri_pc = 0
-        try:
-            tri = npf.irr(cash_flows_annuel_tri)
+        
+        cash_flows_annuel = [-investissement_initial_personnel] + flux_tresorerie_tri_annuels[:]
+        cash_flows_annuel[-1] += cash_net_final_investisseur
+        try: 
+            tri = npf.irr(cash_flows_annuel)
             tri_pc = tri * 100 if not np.isnan(tri) else 0
-        except: pass
-        projection.append({"Année": annee, "Loyers Annuels": loyer_annuel, "Résultat Fiscal": resultat_fiscal_sci, "Impôt (IS)": is_a_payer, "Dividendes Dispo.": dividendes_distribuables, "Cash-flow Net Invest.": flux_net_investisseur, "Tréso. SCI": tresorerie_sci_cumulee, "PV Imposable": plus_value_pro, "Impôt sur PV": is_sur_pv, "Bénéfice Net Total": benefice_net_total, "TRI (%)": tri_pc})
+        except: 
+            tri_pc = 0
 
-    if duree_pret > 0 and projection:
-        annee_post_credit = duree_pret + 1
-        facteur_inflation = (1 + inflation_pc)**(annee_post_credit - 1)
-        loyer_annuel = (loyer_mensuel_base * 12) * facteur_inflation
-        charges_copro_annuelles = (charges_copro_base * 12) * facteur_inflation
+        projection.append({ "Année": annee, "Loyers Annuels": loyer_annuel, "Résultat Fiscal": resultat_fiscal_avant_deficit, "Dividendes Disponibles": dividendes_disponibles, "Impôt (IR+PS)": impot_total_annuel, "Cash-flow Net": cashflow_net_investisseur_annuel, "Tréso. SARL": tresorerie_sarl_cumulee, "PV Brute": plus_value_brute, "Impôt sur PV": impot_sur_pv, "Bénéfice Net Total": benefice_net_total, "TRI (%)": tri_pc })
+
+    # Section post-crédit
+    projection_post_credit = {}
+    if duree_pret > 0 and len(projection) > 0:
+        annee_post_credit = duree_pret + 1; facteur_inflation = (1 + inflation_pc)**(annee_post_credit - 1)
+        loyer_annuel = (loyer_mensuel_base * 12) * facteur_inflation; charges_copro_annuelles = (charges_copro_base * 12) * facteur_inflation
         taxe_fonciere_actuelle = taxe_fonciere_base * facteur_inflation
-        frais_gestion_annuels = loyer_annuel * (valeurs_num["frais_gestion_pc"] / 100)
-        gli_annuelle = (loyer_annuel + charges_copro_annuelles) * (valeurs_num["taux_gli_pc"] / 100)
-        charges_annuelles_cash = (charges_copro_annuelles + taxe_fonciere_actuelle + valeurs_num["assurance_pno"] + frais_gestion_annuels + gli_annuelle + (valeurs_num["cfe"] * facteur_inflation))
-        amort_immo_et_frais = base_amortissable * 0.85 / valeurs_num["duree_amort_immo"] if annee_post_credit <= valeurs_num["duree_amort_immo"] else 0
-        amort_meubles = valeurs_num["valeur_meubles"] / valeurs_num["duree_amort_meubles"] if annee_post_credit <= valeurs_num["duree_amort_meubles"] else 0
-        amortissement_annuel = amort_immo_et_frais + amort_meubles
-        resultat_fiscal_sci = loyer_annuel - charges_annuelles_cash - amortissement_annuel
-        is_a_payer = 0
-        if resultat_fiscal_sci > 0:
-            benefice_taux_reduit = min(resultat_fiscal_sci, 42500)
-            is_a_payer = (benefice_taux_reduit * 0.15) + (max(0, resultat_fiscal_sci - benefice_taux_reduit) * 0.25)
-        cashflow_sci_avant_is = loyer_annuel - charges_annuelles_cash
-        resultat_net_comptable = resultat_fiscal_sci - is_a_payer
-        tresorerie_sci_post_credit = tresorerie_sci_cumulee + cashflow_sci_avant_is - is_a_payer
-        taux_distrib = valeurs_num["taux_distrib_pc"] / 100
-        dividendes_distribuables = max(0, resultat_net_comptable)
-        dividendes_verses = min(dividendes_distribuables, tresorerie_sci_post_credit) * taux_distrib
-        impot_dividendes = dividendes_verses * 0.30
-        cash_net_investisseur_annuel = dividendes_verses - impot_dividendes
-        tresorerie_sci_post_credit -= dividendes_verses
-        projection.append({key: "---" for key in projection[0].keys()})
-        projection.append({"Année": f"An {annee_post_credit}", "Loyers Annuels": loyer_annuel, "Résultat Fiscal": resultat_fiscal_sci, "Impôt (IS)": is_a_payer, "Dividendes Dispo.": dividendes_distribuables, "Cash-flow Net Invest.": cash_net_investisseur_annuel, "Tréso. SCI": tresorerie_sci_post_credit, "PV Imposable": None, "Impôt sur PV": None, "Bénéfice Net Total": None, "TRI (%)": None})
+        frais_gestion_annuels = loyer_annuel * (valeurs_num.get("frais_gestion_pc", 0) / 100); gli_annuelle = (loyer_annuel + charges_copro_annuelles) * (valeurs_num.get("taux_gli_pc", 0) / 100)
+        charges_annuelles_cash = (charges_copro_annuelles + taxe_fonciere_actuelle + valeurs_num.get("assurance_pno", 0) + frais_gestion_annuels + gli_annuelle + (valeurs_num.get("cfe", 0) * facteur_inflation))
+        
+        amort_immo = (prix_achat + frais_notaire) * 0.85 / valeurs_num.get("duree_amort_immo", 1) if annee_post_credit <= valeurs_num.get("duree_amort_immo", 0) else 0
+        amort_travaux = cout_travaux / 10 if annee_post_credit <= 10 else 0
+        amort_meubles = valeurs_num.get("valeur_meubles", 0) / valeurs_num.get("duree_amort_meubles", 1) if annee_post_credit <= valeurs_num.get("duree_amort_meubles", 0) else 0
+        amortissement_annuel = amort_immo + amort_travaux + amort_meubles
+        resultat_fiscal = loyer_annuel - charges_annuelles_cash - amortissement_annuel
+        
+        benefice_imposable = max(0, resultat_fiscal - deficit_reportable); impot_total_annuel = benefice_imposable * (tmi_pc + prelevements_sociaux_pc)
+        cashflow_sarl_post_credit = loyer_annuel - charges_annuelles_cash
+        
+        tresorerie_post_credit = tresorerie_sarl_cumulee + cashflow_sarl_post_credit
+        
+        taux_distrib = valeurs_num.get("taux_distrib_pc", 100) / 100
+        dividendes_disponibles = max(0, resultat_fiscal)
+        dividendes_verses = min(dividendes_disponibles, tresorerie_post_credit) * taux_distrib
+        
+        cashflow_net_investisseur_annuel = dividendes_verses - impot_total_annuel
+        tresorerie_post_credit -= dividendes_verses
+        
+        projection_post_credit = {"Année": f"An {annee_post_credit}", "Loyers Annuels": loyer_annuel, "Résultat Fiscal": resultat_fiscal, "Dividendes Disponibles": dividendes_disponibles, "Impôt (IR+PS)": impot_total_annuel, "Cash-flow Net": cashflow_net_investisseur_annuel, "Tréso. SARL": tresorerie_post_credit, "PV Brute": "N/A", "Impôt sur PV": "N/A", "Bénéfice Net Total": "N/A", "TRI (%)": "N/A"}
 
-    return projection
-
-# --- INTERFACE UTILISATEUR STREAMLIT ---
-
-st.title("Simulateur d'Investissement Locatif en SCI à l'IS 📊")
-st.markdown("##### Un outil avancé pour projeter la rentabilité et la fiscalité de votre projet sur le long terme.")
-st.write("") # Espace
-
-# --- Section 1: Paramètres de Simulation (regroupés dans des onglets) ---
-st.header("1. Paramètres de la Simulation")
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🏠 Projet Immobilier", 
-    "🏦 Financement & Frais", 
-    "🧾 Fiscalité & Amortissement", 
-    "⚙️ Hypothèses & Charges"
-])
-
-with tab1:
-    st.subheader("Description du bien et des revenus locatifs")
-    col1, col2 = st.columns(2)
-    with col1:
-        prix_achat = st.number_input("Prix d'achat (€)", min_value=0, value=200000, step=1000)
-        cout_travaux = st.number_input("Coût des travaux (€)", min_value=0, value=30000, step=500)
-    with col2:
-        valeur_meubles = st.number_input("Valeur des meubles (€)", min_value=0, value=15000, step=500)
-        loyer_mensuel = st.number_input("Loyer mensuel HC (€)", min_value=0, value=1200, step=10)
-
-with tab2:
-    st.subheader("Montage financier du projet")
-    col1, col2 = st.columns(2)
-    with col1:
-        apport_personnel = st.number_input("Apport personnel (€)", min_value=0, value=20000, step=500)
-        frais_notaire = st.number_input("Frais de notaire (€)", min_value=0, value=16000, step=100)
-        duree_pret = st.number_input("Durée du prêt (années)", min_value=1, max_value=30, value=20, step=1)
-    with col2:
-        taux_interet_pret = st.number_input("Taux d'intérêt du prêt (%)", min_value=0.0, value=3.5, step=0.01, format="%.2f")
-        taux_assurance_pret = st.number_input("Taux d'assurance du prêt (%)", min_value=0.0, value=0.34, step=0.01, format="%.2f")
-        frais_dossier = st.number_input("Frais de dossier bancaire (€)", min_value=0, value=1500, step=50)
-
-with tab3:
-    st.subheader("Paramètres fiscaux et comptables de la SCI")
-    col1, col2 = st.columns(2)
-    with col1:
-        duree_amort_immo = st.number_input("Durée amort. Immobilier (ans)", min_value=1, value=30, step=1)
-        duree_amort_meubles = st.number_input("Durée amort. Meubles (ans)", min_value=1, value=7, step=1)
-    with col2:
-        taux_distrib_pc = st.number_input("Taux de distribution des dividendes (%)", min_value=0.0, max_value=100.0, value=100.0, step=1.0)
-
-with tab4:
-    st.subheader("Hypothèses de marché et charges d'exploitation")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        inflation_pc = st.number_input("Inflation / Revalo. loyer (%)", min_value=0.0, value=2.0, step=0.1, format="%.1f")
-        revalo_bien_pc = st.number_input("Revalo. annuelle du bien (%)", min_value=0.0, value=3.0, step=0.1, format="%.1f")
-        charges_copro = st.number_input("Charges copro / mois (€)", min_value=0, value=100, step=5)
-    with col2:
-        taxe_fonciere = st.number_input("Taxe foncière (€/an)", min_value=0, value=1000, step=10)
-        frais_gestion_pc = st.number_input("Frais de gestion (%)", min_value=0.0, value=7.0, step=0.1, format="%.1f")
-        taux_gli_pc = st.number_input("Taux GLI (%)", min_value=0.0, value=3.5, step=0.1, format="%.1f")
-    with col3:
-        assurance_pno = st.number_input("Assurance PNO (€/an)", min_value=0, value=200, step=10)
-        cfe = st.number_input("CFE (€/an)", min_value=0, value=200, step=10)
+    return projection, projection_post_credit
 
 
-# --- Ligne de séparation ---
+# --- INTERFACE GRAPHIQUE STREAMLIT ---
+
+st.set_page_config(layout="wide", page_title="Simulateur SARL de Famille (IR)")
+st.title("📈 Simulateur d'Investissement en SARL de Famille (IR)")
+st.write("Cet outil permet de simuler la rentabilité d'un investissement locatif meublé (LMNP) via une SARL de famille à l'IR.")
+
+# Définition des champs et de leurs valeurs par défaut
+champs = { "bien": {"prix_achat": 120000.0, "cout_travaux": 0.0, "valeur_meubles": 10000.0, "loyer_mensuel": 900.0}, "financement": {"apport_personnel": 30000.0, "frais_notaire": 10000.0, "duree_pret": 25, "taux_interet_pret": 3.5, "taux_assurance_pret": 0.34, "frais_dossier": 0.0}, "fiscalite": {"tmi_pc": 11.0, "duree_amort_immo": 30, "duree_amort_meubles": 7, "taux_distrib_pc": 100.0}, "hypotheses": {"inflation_pc": 2.0, "revalo_bien_pc": 2.0, "charges_copro": 100.0, "taxe_fonciere": 500.0, "frais_gestion_pc": 6.0, "taux_gli_pc": 3.5, "assurance_pno": 120.0, "cfe": 150.0} }
+
+params = {}
+
+# Panneaux de saisie
+col1, col2 = st.columns(2)
+
+with col1:
+    st.header("🏠 Projet Immobilier")
+    params["prix_achat"] = st.number_input("Prix d'achat (€)", min_value=0.0, value=champs["bien"]["prix_achat"], step=1000.0, format="%.2f")
+    params["cout_travaux"] = st.number_input("Coût des travaux (€)", min_value=0.0, value=champs["bien"]["cout_travaux"], step=500.0, format="%.2f")
+    params["valeur_meubles"] = st.number_input("Valeur des meubles (€)", min_value=0.0, value=champs["bien"]["valeur_meubles"], step=100.0, format="%.2f")
+    params["loyer_mensuel"] = st.number_input("Loyer mensuel HC (€)", min_value=0.0, value=champs["bien"]["loyer_mensuel"], step=10.0, format="%.2f")
+    
+    st.header("⚖️ Fiscalité Personnelle (IR)")
+    params["tmi_pc"] = st.number_input("Taux Marginal d'Imposition (TMI) (%)", min_value=0.0, max_value=100.0, value=champs["fiscalite"]["tmi_pc"], step=1.0, format="%.2f")
+    st.info("Les prélèvements sociaux sur les revenus locatifs sont fixés à 17.2%.")
+    params["duree_amort_immo"] = st.number_input("Durée d'amortissement de l'immobilier (ans)", min_value=1, max_value=100, value=champs["fiscalite"]["duree_amort_immo"], step=1)
+    params["duree_amort_meubles"] = st.number_input("Durée d'amortissement des meubles (ans)", min_value=1, max_value=20, value=champs["fiscalite"]["duree_amort_meubles"], step=1)
+    params["taux_distrib_pc"] = st.number_input("Taux de distribution des dividendes (%)", min_value=0.0, max_value=100.0, value=champs["fiscalite"]["taux_distrib_pc"], step=5.0, format="%.2f")
+
+with col2:
+    st.header("💰 Financement & Frais")
+    params["apport_personnel"] = st.number_input("Apport personnel (€)", min_value=0.0, value=champs["financement"]["apport_personnel"], step=1000.0, format="%.2f")
+    params["frais_notaire"] = st.number_input("Frais de notaire & annexes (€)", min_value=0.0, value=champs["financement"]["frais_notaire"], step=100.0, format="%.2f")
+    params["duree_pret"] = st.number_input("Durée du prêt (ans)", min_value=1, max_value=30, value=champs["financement"]["duree_pret"], step=1)
+    params["taux_interet_pret"] = st.number_input("Taux d'intérêt du prêt (%)", min_value=0.0, value=champs["financement"]["taux_interet_pret"], step=0.01, format="%.2f")
+    params["taux_assurance_pret"] = st.number_input("Taux d'assurance du prêt (%)", min_value=0.0, value=champs["financement"]["taux_assurance_pret"], step=0.01, format="%.2f")
+    params["frais_dossier"] = st.number_input("Frais de dossier bancaire (€)", min_value=0.0, value=champs["financement"]["frais_dossier"], step=50.0, format="%.2f")
+    
+    montant_pret = params["prix_achat"] + params["cout_travaux"] + params["frais_notaire"] - params["apport_personnel"]
+    st.metric(label="Montant du prêt à financer", value=f"{montant_pret:,.2f} €")
+
+    st.header("⚙️ Hypothèses & Charges")
+    params["inflation_pc"] = st.number_input("Inflation annuelle (%)", min_value=0.0, max_value=20.0, value=champs["hypotheses"]["inflation_pc"], step=0.1, format="%.2f")
+    params["revalo_bien_pc"] = st.number_input("Revalorisation annuelle du bien (%)", min_value=-5.0, max_value=20.0, value=champs["hypotheses"]["revalo_bien_pc"], step=0.1, format="%.2f")
+    params["charges_copro"] = st.number_input("Charges de copropriété mensuelles (€)", min_value=0.0, value=champs["hypotheses"]["charges_copro"], step=5.0, format="%.2f")
+    params["taxe_fonciere"] = st.number_input("Taxe foncière annuelle (€)", min_value=0.0, value=champs["hypotheses"]["taxe_fonciere"], step=10.0, format="%.2f")
+    params["frais_gestion_pc"] = st.number_input("Frais de gestion locative (%)", min_value=0.0, max_value=100.0, value=champs["hypotheses"]["frais_gestion_pc"], step=0.5, format="%.2f")
+    params["taux_gli_pc"] = st.number_input("Taux d'assurance loyers impayés (GLI) (%)", min_value=0.0, max_value=10.0, value=champs["hypotheses"]["taux_gli_pc"], step=0.1, format="%.2f")
+    params["assurance_pno"] = st.number_input("Assurance PNO annuelle (€)", min_value=0.0, value=champs["hypotheses"]["assurance_pno"], step=5.0, format="%.2f")
+    params["cfe"] = st.number_input("Cotisation Foncière des Entreprises (CFE) (€)", min_value=0.0, value=champs["hypotheses"]["cfe"], step=10.0, format="%.2f")
+
+
 st.divider()
 
-# --- Section 2: Résultats de la Simulation ---
-st.header("2. Résultats de la Simulation")
+# --- Affichage des résultats ---
+st.header("📊 Projection Financière Annuelle")
 
-params = {
-    "prix_achat": prix_achat, "cout_travaux": cout_travaux, "frais_notaire": frais_notaire, "valeur_meubles": valeur_meubles,
-    "loyer_mensuel": loyer_mensuel, "charges_copro": charges_copro, "taxe_fonciere": taxe_fonciere,
-    "apport_personnel": apport_personnel, "duree_pret": duree_pret, "taux_interet_pret": taux_interet_pret,
-    "taux_assurance_pret": taux_assurance_pret, "frais_dossier": frais_dossier,
-    "inflation_pc": inflation_pc, "revalo_bien_pc": revalo_bien_pc, "assurance_pno": assurance_pno,
-    "frais_gestion_pc": frais_gestion_pc, "taux_gli_pc": taux_gli_pc, "taux_distrib_pc": taux_distrib_pc,
-    "duree_amort_immo": duree_amort_immo, "duree_amort_meubles": duree_amort_meubles, "cfe": cfe
-}
+projection_data, projection_post_credit = generer_projection_lmnp(params)
 
-projection_data = generer_projection_sci_is(params)
-
-# --- Indicateurs Clés ---
-st.subheader("Indicateurs Clés du Projet")
-montant_pret = prix_achat + cout_travaux + frais_notaire - apport_personnel
-df_numerique = pd.DataFrame(projection_data).dropna().loc[pd.to_numeric(pd.DataFrame(projection_data)['Année'], errors='coerce').notna()]
-
-if not df_numerique.empty:
-    cashflow_moyen_investisseur = df_numerique["Cash-flow Net Invest."].mean() / 12
-    tri_final = df_numerique["TRI (%)"].iloc[-1]
-    benefice_final = df_numerique["Bénéfice Net Total"].iloc[-1]
-else:
-    cashflow_moyen_investisseur = tri_final = benefice_final = 0
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Montant du Prêt", f"{montant_pret:,.0f} €")
-col2.metric("Cash-flow Net Moyen / mois", f"{cashflow_moyen_investisseur:,.0f} €", help="Moyenne du cash-flow net mensuel reçu par l'investisseur pendant la durée du crédit.")
-col3.metric(f"TRI à {duree_pret} ans", f"{tri_final:.1f}%", help="Taux de Rentabilité Interne : le rendement annualisé réel de votre capital investi.")
-col4.metric(f"Bénéfice Net à {duree_pret} ans", f"{benefice_final:,.0f} €", help="Enrichissement net final en cas de revente la dernière année, après remboursement de tout le capital investi.")
-
-
-# --- Tableau de Projection ---
-st.subheader("Projection Financière Annuelle")
-if not projection_data:
-    st.warning("Veuillez entrer des paramètres valides pour lancer la simulation.")
+if "erreur" in projection_data:
+    st.error(projection_data["erreur"])
 else:
     df = pd.DataFrame(projection_data)
-    formatter_euros = lambda x: f"{x:,.0f} €" if isinstance(x, (int, float)) else x
-    formatter_percent = lambda x: f"{x:.1f}%" if isinstance(x, (int, float)) else x
-    format_dict = {col: formatter_euros for col in df.columns if col not in ["Année", "TRI (%)"]}
-    format_dict["TRI (%)"] = formatter_percent
-    df_formate = df.style.format(format_dict, na_rep='N/A').set_properties(**{'text-align': 'right'})
-    st.dataframe(df_formate, use_container_width=True, height=(duree_pret + 3) * 38)
     
-# --- Explication des colonnes ---
-with st.expander("🔍 Explication des colonnes du tableau"):
-    st.markdown("""
-    - **Année**: L'année de la simulation. 'An X' représente la première année type après la fin du crédit.
-    - **Loyers Annuels**: Total des loyers bruts perçus par la SCI.
-    - **Résultat Fiscal**: Base de calcul de l'IS : `Loyers - Toutes les charges déductibles - Amortissements`.
-    - **Impôt (IS)**: Impôt sur les Sociétés payé par la SCI sur son Résultat Fiscal (15% jusqu'à 42.500€, puis 25%).
-    - **Dividendes Dispo.**: Montant maximum distribuable aux associés (`Résultat Fiscal - IS`).
-    - **Cash-flow Net Invest.**: Argent net reçu par l'investisseur : `(Dividendes versés - Flat Tax 30%) - Abondement`.
-    - **Tréso. SCI**: Trésorerie restante dans la SCI en fin d'année.
-    - **PV Imposable**: Plus-value professionnelle imposable à l'IS en cas de revente : `Prix de Vente - Valeur Nette Comptable`.
-    - **Impôt sur PV**: IS payé par la SCI sur la plus-value de revente.
-    - **Bénéfice Net Total**: Enrichissement net final de l'investisseur en cas de vente : `(Total dividendes nets + Cash net revente) - (Apport + Abondements)`.
-    - **TRI (%)**: Taux de Rentabilité Interne. Le rendement annualisé de tout le capital investi.
-    """)
+    # Formatage du DataFrame pour affichage
+    format_dict = {
+        'Loyers Annuels': '{:,.0f} €', 'Résultat Fiscal': '{:,.0f} €', 'Dividendes Disponibles': '{:,.0f} €',
+        'Impôt (IR+PS)': '{:,.0f} €', 'Cash-flow Net': '{:,.0f} €', 'Tréso. SARL': '{:,.0f} €',
+        'PV Brute': '{:,.0f} €', 'Impôt sur PV': '{:,.0f} €', 'Bénéfice Net Total': '{:,.0f} €',
+        'TRI (%)': '{:.1f}%'
+    }
+    
+    df_styled = df.style.format(format_dict)
+    
+    st.dataframe(df_styled, use_container_width=True)
+
+    if projection_post_credit:
+        st.subheader(f"🗓️ Situation après la fin du crédit (An {params['duree_pret'] + 1})")
+        
+        # Affichage sous forme de métriques pour plus de clarté
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Loyers Annuels", f"{projection_post_credit['Loyers Annuels']:,.0f} €")
+        col2.metric("Résultat Fiscal", f"{projection_post_credit['Résultat Fiscal']:,.0f} €")
+        col3.metric("Impôt (IR+PS)", f"{projection_post_credit['Impôt (IR+PS)']:,.0f} €", delta_color="inverse")
+        col4.metric("Cash-flow Net Investisseur", f"{projection_post_credit['Cash-flow Net']:,.0f} €")
+
+
+# Explications des colonnes
+with st.expander("📘 Cliquez ici pour voir la description des colonnes du tableau"):
+    descriptions_calcul = {
+        "Année": "L'année de la simulation.",
+        "Loyers Annuels": "Total des loyers perçus dans l'année, revalorisés avec l'inflation.",
+        "Résultat Fiscal": "Base de calcul de l'impôt annuel : Loyers - Charges déductibles - Amortissements. Peut être négatif (déficit).",
+        "Dividendes Disponibles": "Montant maximum distribuable aux associés. Calcul : Résultat Fiscal. Ne peut être distribué que si la trésorerie est suffisante.",
+        "Impôt (IR+PS)": "Impôt total payé par l'investisseur sur les bénéfices locatifs, après déduction des déficits antérieurs.",
+        "Cash-flow Net": "Argent net reçu par l'investisseur : (Dividendes versés) - (Impôts payés) - (Abondement éventuel pour couvrir un déficit de trésorerie).",
+        "Tréso. SARL": "Trésorerie restante dans l'entreprise en fin d'année, après paiement des charges et distribution des dividendes.",
+        "PV Brute": "Plus-Value Brute en cas de revente à l'année N : Prix de Vente - Prix d'Acquisition (hors frais).",
+        "Impôt sur PV": "Impôt total (IR à 19% + PS à 17.2%) payé sur la plus-value, après abattements pour durée de détention.",
+        "Bénéfice Net Total": "Enrichissement net final de l'investisseur en cas de vente. Total des flux (cash net de la revente + dividendes perçus) moins le total du capital investi (apport + abondements).",
+        "TRI (%)": "Taux de Rentabilité Interne. Le rendement annualisé de votre capital investi, tenant compte de tous les flux de trésorerie (investissement initial, cash-flows annuels, et revente). C'est un indicateur de performance clé."
+    }
+    for col, desc in descriptions_calcul.items():
+        st.markdown(f"**{col}**: {desc}")
